@@ -1,5 +1,14 @@
 #include "systemcalls.h"
 
+#include <stdlib.h>
+#include <unistd.h>
+#include <syslog.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+
+
 /**
  * @param cmd the command to execute with system()
  * @return true if the command in @param cmd was executed
@@ -16,7 +25,11 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
-
+    int  system_ret = system(cmd);
+    if (system_ret == -1 || system_ret == 127 || (cmd == NULL && system_ret == 0)) {
+    	syslog(LOG_ERR, "system() call failed with error code %d when cmd was %s", system_ret, cmd == NULL ? "NULL" : cmd);
+    	return false;
+    }
     return true;
 }
 
@@ -49,6 +62,8 @@ bool do_exec(int count, ...)
     // and may be removed
     command[count] = command[count];
 
+    va_end(args);
+
 /*
  * TODO:
  *   Execute a system command by calling fork, execv(),
@@ -58,10 +73,51 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    
+    pid_t pid = fork();
+    
+    if (pid == 0) {
+        int execv_ret = execv(command[0], command);
+        if (execv_ret == -1) {
+            syslog(LOG_ERR, "execv() call failed in the child process with return code %d and errno %d", execv_ret, errno);
+            exit(errno);
+        }
+    }
+    else if (pid == -1) {
+        syslog(LOG_ERR, "fork() call failed with error code %d and errno was %d", pid, errno);
+        return false;	// fork() failed to create child process
+    }
+    
+    
+    if (pid > 0) {
+        int status = 0;
+        pid_t wait_ret = wait(&status);
+        if (wait_ret == -1) {
+            syslog(LOG_ERR, "wait() returned %d and errno was set to %d", wait_ret, errno);
+            return false;
+        }
+        if (pid == wait_ret) {
+            if (WIFEXITED(status)) {
+                syslog(WEXITSTATUS(status) == 0 ? LOG_INFO : LOG_ERR, "Process terminated normally with status code %d", WEXITSTATUS(status));
+                return WEXITSTATUS(status) == 0;
+            }
+            if (WIFSIGNALED(status)) {
+                syslog(LOG_ERR, "Process was killed by signal %d %s", WTERMSIG(status), WCOREDUMP(status) ? " (dumped code)" : "");
+                return false;
+            }
+            if (WIFSTOPPED(status)) {
+                syslog(LOG_ERR, "Process was stopped by signal %d", WSTOPSIG(status));
+                return false;
+            }
+            if (WIFCONTINUED(status)) {
+                syslog(LOG_ERR, "Process continued");
+                return false;
+            }
 
-    va_end(args);
+        }
+    }
 
-    return true;
+    return false;
 }
 
 /**
@@ -94,6 +150,69 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
 */
 
     va_end(args);
+    
+    int fd = 0;
+    if (outputfile != NULL) {
+        fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+        if (fd < 0) {
+            syslog(LOG_ERR, "Could not open redirection file %s because of error %d", outputfile, errno);
+            return false;
+        }
+    }
+    
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* we need to redirect here is outputfile is not NULL */
+        if (fd) {
+            int dup2_ret = dup2(fd, 1);
+            if (dup2_ret < 0) {
+                syslog(LOG_ERR, "Redirection requested but dup2() failed to execute with code %d and errno %d", dup2_ret, errno);
+                return false;
+            }
+            close(fd);
+        }
+        int execv_ret = execv(command[0], command);
+        if (execv_ret == -1) {
+            syslog(LOG_ERR, "execv() call failed in the child process with return code %d and errno %d", execv_ret, errno);
+            exit(errno);
+        }
+    }
+    else if (pid == -1) {
+        syslog(LOG_ERR, "fork() call failed with error code %d and errno was %d", pid, errno);
+        return false;	// fork() failed to create child process
+    }
+    
+    if (fd) {
+        close(fd);
+    }
 
-    return true;
+    if (pid > 0) {
+        int status = 0;
+        pid_t wait_ret = wait(&status);
+        if (wait_ret == -1) {
+            syslog(LOG_ERR, "wait() returned %d and errno was set to %d", wait_ret, errno);
+            return false;
+        }
+        if (pid == wait_ret) {
+            if (WIFEXITED(status)) {
+                syslog(WEXITSTATUS(status) == 0 ? LOG_INFO : LOG_ERR, "Process terminated normally with status code %d", WEXITSTATUS(status));
+                return WEXITSTATUS(status) == 0;
+            }
+            if (WIFSIGNALED(status)) {
+                syslog(LOG_ERR, "Process was killed by signal %d %s", WTERMSIG(status), WCOREDUMP(status) ? " (dumped code)" : "");
+                return false;
+            }
+            if (WIFSTOPPED(status)) {
+                syslog(LOG_ERR, "Process was stopped by signal %d", WSTOPSIG(status));
+                return false;
+            }
+            if (WIFCONTINUED(status)) {
+                syslog(LOG_ERR, "Process continued");
+                return false;
+            }
+
+        }
+    }
+
+    return false;
 }
