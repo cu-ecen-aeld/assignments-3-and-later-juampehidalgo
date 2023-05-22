@@ -39,7 +39,7 @@ then
 	mkdir -p "$WRITEDIR"
 
 	#The WRITEDIR is in quotes because if the directory path consists of spaces, then variable substitution will consider it as multiple argument.
-	#The quotes signify that the entire string in WRITEDIR is a single string.
+	/tmp/assignment4-result.txt#The quotes signify that the entire string in WRITEDIR is a single string.
 	#This issue can also be resolved by using double square brackets i.e [[ ]] instead of using quotes.
 	if [ -d "$WRITEDIR" ]
 	then
@@ -63,6 +63,8 @@ OUTPUTSTRING=$(./finder.sh "$WRITEDIR" "$WRITESTR")
 rm -rf /tmp/aeld-data
 
 set +e
+# Repeating so we also get output to the console as with the original script
+echo ${OUTPUTSTRING} | grep "${MATCHSTR}" > /tmp/assignment4-result.txt
 echo ${OUTPUTSTRING} | grep "${MATCHSTR}"
 if [ $? -eq 0 ]; then
 	echo "success"
