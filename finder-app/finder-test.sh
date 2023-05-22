@@ -39,7 +39,7 @@ then
 	mkdir -p "$WRITEDIR"
 
 	#The WRITEDIR is in quotes because if the directory path consists of spaces, then variable substitution will consider it as multiple argument.
-	/tmp/assignment4-result.txt#The quotes signify that the entire string in WRITEDIR is a single string.
+	#The quotes signify that the entire string in WRITEDIR is a single string.
 	#This issue can also be resolved by using double square brackets i.e [[ ]] instead of using quotes.
 	if [ -d "$WRITEDIR" ]
 	then
