@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # Description: start/stop init script for the aesd socket server application assignment
 
