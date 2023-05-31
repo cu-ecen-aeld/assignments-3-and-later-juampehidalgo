@@ -11,12 +11,37 @@
 #include <arpa/inet.h>
 #include <syslog.h>
 #include <signal.h>
+#include <pthread.h>
+#include <signal.h>
+#include <time.h>
+
+#include "queue.h"
+#include "utility.h"
+
+/* unistd.h defines sleep, usleep & nanosleep */
+/* clock_nanosleep */
+/* always use CLOCK_MONOTONIC for clock type */
+/* set initial reference by calling clock_gettime */
+/* start sleep */
+/* get clock_gettime again to confirm sleep duration */
+/* but sleeps should not be used, instead use timers */
+/* in unistd.h, alarm via signals, getitimer/setitimer */
+/* POSIX timers -> <signal.h> & <time.h>, timer_create/timersettime/timer_delete */
+/* Chapter 11 of Linux System Programming. Min 8:40 of week's 4 Sleeping and Timers video */
+struct list_node {
+    struct thread_information* ptr;
+    TAILQ_ENTRY(list_node) nodes;
+};
 
 /* global variables */
 int server_socket_descriptor = 0;
 int output_file_descriptor = 0;
 int connection_socket_descriptor = 0;
 char* output_file_path = "/var/tmp/aesdsocketdata";
+bool mutex_initialized = false;
+pthread_mutex_t mutex;
+timer_t timer_id = 0;
+TAILQ_HEAD(thread_list, list_node) head_node;
 
 /* helper methods */
 void sync_and_close_output_file(int file_descriptor) {
@@ -35,8 +60,47 @@ void close_socket(int sd) {
 }
 
 void terminate(int termination_reason) {
+    if (timer_id) {
+        if (timer_delete(timer_id) != 0) {
+            syslog(LOG_ERR, "Error while canceling time stamp timer, error: %s", strerror(errno));
+        }
+    }
+
+    /* iterate through the list of threads and request their termination */
+    struct list_node* current_node = NULL;
+    while (!TAILQ_EMPTY(&head_node)) {
+        current_node = TAILQ_FIRST(&head_node);
+        /* send kill signal to thread */
+        int ret_val = pthread_cancel(current_node->ptr->thread_id);
+        if (ret_val) {
+            syslog(LOG_WARNING, "Could not cancel thread ID %ld, error: %s", current_node->ptr->thread_id, strerror(ret_val));
+        }
+        void* res;
+        ret_val = pthread_join(current_node->ptr->thread_id, &res);
+        if (ret_val) {
+            syslog(LOG_ERR, "join error for thread ID %ld, error: %s", current_node->ptr->thread_id, strerror(ret_val));
+        }
+        if (current_node->ptr->socketd) {
+            close(current_node->ptr->socketd);
+            syslog(LOG_NOTICE, "Closed connection from %s", current_node->ptr->ip_address);
+            if (current_node->ptr->ip_address) {
+                free(current_node->ptr->ip_address);
+            }
+        }
+
+        free(current_node->ptr);
+        TAILQ_REMOVE(&head_node, current_node, nodes);
+        free(current_node);
+        current_node = NULL;
+    }
+
+    if (mutex_initialized) {
+        int ret_val = pthread_mutex_destroy(&mutex);
+        if (ret_val) {
+            syslog(LOG_WARNING, "Failed to destroy mutex instance during cleanup, error: %s", strerror(ret_val));
+        }
+    }
     sync_and_close_output_file(output_file_descriptor);
-    close_socket(connection_socket_descriptor);
     close_socket(server_socket_descriptor);
     if (remove(output_file_path) < 0) {
         syslog(LOG_ERR, "Failed to remove the file at %s upon termination, error: %s", output_file_path, strerror(errno));
@@ -49,7 +113,8 @@ void terminate(int termination_reason) {
 static void termination_handler(int signal_number) {
     if (signal_number == SIGINT) {
         syslog(LOG_NOTICE, "Caught signal, exiting");
-        terminate(EXIT_SUCCESS);    }
+        terminate(EXIT_SUCCESS);
+    }
     else if (signal_number == SIGTERM) {
         syslog(LOG_NOTICE, "Caught signal, exiting");
         terminate(EXIT_SUCCESS);
@@ -60,118 +125,13 @@ void setup_signal_handlers(void) {
     struct sigaction sigact;
     memset(&sigact, 0, sizeof(sigact));
     sigact.sa_handler = termination_handler;
-    if (sigaction(SIGTERM, &sigact, NULL) != 0) {
+    if (sigaction(SIGTERM, &sigact, NULL) != 0) {    
         syslog(LOG_ERR, "Failure when trying to register a handler for the SIGTERM signal");
         exit(EXIT_FAILURE);
     }
     if (sigaction(SIGINT, &sigact, NULL) != 0) {
         syslog(LOG_ERR, "Failure when trying to register a handler for the SIGINT signal");
         exit(EXIT_FAILURE);
-    }
-}
-
-
-void dump_buffer(char* ptr, size_t size, int fd) {
-    size_t bytes_to_write = size;
-    size_t bytes_wrote_overall = 0;
-    size_t bytes_wrote;
-    while ((bytes_wrote = write(fd, ptr + bytes_wrote_overall, bytes_to_write)) < bytes_to_write) {
-        if (bytes_wrote < 0) {
-            syslog(LOG_ERR, "Failure to write to output file, error %d", errno);
-            terminate(EXIT_FAILURE);
-        }
-        bytes_to_write -= bytes_wrote;
-        bytes_wrote_overall += bytes_wrote;
-    }
-}
-
-/* Reception function */
-void write_incoming_string_to_file(int socketd, int filed) {
-    char* ptr = NULL;
-    char* tmp_ptr = NULL;
-    size_t chunk_size = 512;
-    size_t allocated_space = 0;
-    size_t total_read = 0;
-    
-    do {
-        /* allocate memory, if needed */
-        if (allocated_space - total_read < chunk_size >> 2) {
-            tmp_ptr = realloc(ptr, allocated_space + chunk_size);
-            if (tmp_ptr == NULL) {
-                /* allocation failed, clear previous buffer and exit */
-                syslog(LOG_ERR, "Failed to allocate heap during execution, error %d", errno);
-                if (ptr != NULL) {
-                    free(ptr);
-                }
-                terminate(EXIT_FAILURE);
-            }
-            ptr = tmp_ptr;
-            allocated_space += chunk_size;
-        }
-
-        
-        /* now read up to chunk_size into the next buffer position */
-        int read_bytes = read(socketd, ptr + total_read, allocated_space - total_read);
-        if (read_bytes < 0) {
-            syslog(LOG_ERR, "Error while reading from thewrite_incoming_string_to_file socket, error %d", errno);
-            exit(EXIT_FAILURE);
-        }
-        /* update total_read */
-        total_read += read_bytes;
-        /* check if LF received */
-        if (ptr[total_read-1] == '\n') {
-            /* we got one full line read, return pointer to buffer */
-            dump_buffer(ptr, total_read, filed);
-            break;
-        }
-        
-    } while (true);
-    
-    /* let's release the memory allocated for the reading from socket */
-    free(ptr);
-}
-
-void write_output_file_to_socket(int fd, int conn_socket) {
-
-    off_t current_file_offset = lseek(fd, 0, SEEK_CUR);
-    if (current_file_offset < 0) {
-        syslog(LOG_ERR, "Could not poll the current output file offset, error %d", errno);
-        terminate(EXIT_FAILURE);
-    }
-
-    /* move file pointer to the beginning */
-    if (lseek(fd, 0, SEEK_SET) < 0) {
-        syslog(LOG_ERR, "Failed to move the output file pointer to the beginning of the file, error %d", errno);
-        terminate(EXIT_FAILURE);
-    }
-    
-    char buffer[1024] = {0};
-    int bytes_read = 0;
-    /* now start reading file chunk by chunk (e.g. 1024 bytes at a time) */
-    while((bytes_read = read(fd, buffer, 1024)) > 0) {
-        size_t current_chunk_size = bytes_read;
-        size_t write_ptr = 0;
-        
-        while (current_chunk_size > 0) {
-            int bytes_wrote = write(conn_socket, buffer + write_ptr, current_chunk_size);
-            if (bytes_wrote < 0) {
-                syslog(LOG_ERR, "Failed while writting to the client socket, error: %s", strerror(errno));
-                terminate(EXIT_FAILURE);
-            }
-            write_ptr += bytes_wrote;
-            current_chunk_size -= bytes_wrote;
-        }
-
-    }
-    if (bytes_read < 0) {
-        syslog(LOG_ERR, "Failed while reading from the output file, error: %s", strerror(errno));
-        terminate(EXIT_FAILURE);
-    }
-    
-    /* get the file offset back to where it was*/
-    if (lseek(fd, current_file_offset, SEEK_SET) < 0) {
-        syslog(LOG_ERR, "Could not restore the output file offset to its original value, error %d", errno);
-        terminate(EXIT_FAILURE);
     }
 }
 
@@ -191,12 +151,42 @@ enum program_parameters {
     OUTPUT_FILE
 };
 
+static void timer_thread_run_function(union sigval sigval) {
+    struct thread_information* thread_info = (struct thread_information*)sigval.sival_ptr;
+    if (pthread_mutex_lock(thread_info->mutex_ptr) != 0) {
+    	syslog(LOG_ERR, "Time stamp thread could not lock output file for writing, error: %s", strerror(errno));
+    }
+    else {
+    	/* here we access the output file to time stamp */
+        char time_stamp_str[256] = {0};
+    	time_t t = time(NULL);
+    	struct tm *tmp = localtime(&t);
+    	if (tmp == NULL) {
+    	    syslog(LOG_ERR, "Could not get local time structure, error: %s", strerror(errno));
+    	}
+        int ret_val = strftime(time_stamp_str, sizeof(time_stamp_str), "timestamp:%a, %d %b %Y %T %z\n", tmp);
+        if (ret_val == 0) {
+            syslog(LOG_ERR, "Failed to get formatted time stamp string, error: %s", strerror(ret_val));
+        }
+        ret_val = dump_buffer_to_file(time_stamp_str, ret_val, thread_info->filed);
+        if (ret_val) {
+            syslog(LOG_ERR, "Could not write time stamp to output file, error: %s", strerror(ret_val));
+            //thread_info->thread_return_value = EXIT_FAILURE;
+            //pthread_exit(&thread_info->thread_return_value);
+        }
+
+    	if (pthread_mutex_unlock(thread_info->mutex_ptr) != 0) {
+    	    syslog(LOG_ERR, "Time stamp thread could not unlock output file... server will likely lock up, error: %s", strerror(errno));
+    	}
+    }
+}
+
 int main(int argc, char* argv[]) {
 
     bool running_as_daemon = false;
     int opt_val = 1;
     int server_port = 9000;
-
+    TAILQ_INIT(&head_node);
 
     openlog("aesdsocket", LOG_CONS | LOG_PERROR | LOG_PID, running_as_daemon ? LOG_DAEMON : LOG_USER);
     
@@ -343,37 +333,92 @@ int main(int argc, char* argv[]) {
         syslog(LOG_ERR, "Socket listen failed: %d", errno);
         terminate(EXIT_FAILURE);
     }
-    
-    int conn_socket = 0;
-    while ((conn_socket = accept(socket_fd, (struct sockaddr*)&address, (socklen_t*)&addr_length)) > 0) {
-        syslog(LOG_NOTICE, "Accepted connection from %s", inet_ntoa(address.sin_addr));
-        
-        // open output file for write with create flag on
-        int fd = open(output_file_path, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
-        if (fd < 0) {
-            syslog(LOG_ERR, "Could not open/create output file at %s, error %d", output_file_path, errno);
-            terminate(EXIT_FAILURE);
-        }
-        
-        /* read incoming socket and dump string to file */
-        write_incoming_string_to_file(conn_socket, fd);
-        
-        /* make sure buffers are flushed into file */
-        if (fsync(fd) < 0) {
-            syslog(LOG_ERR, "Failed to flush to output file before returning the information to client");
-            terminate(EXIT_FAILURE);
-        }
-        
-        /* now pump complete file contents to socket */
-        write_output_file_to_socket(fd, conn_socket);
 
-
-        // clean up by closing both output file and incoming socket (although there is really no need to open/close the file for each connection since we're syncing the file)
-        sync_and_close_output_file(fd);
-        close_socket(conn_socket);
-        syslog(LOG_NOTICE, "Closed connection from %s", inet_ntoa(address.sin_addr));
+    // open output file for write with create flag on
+    int fd = open(output_file_path, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+    if (fd < 0) {
+        syslog(LOG_ERR, "Could not open/create output file at %s, error %d", output_file_path, errno);
+        terminate(EXIT_FAILURE);
     }
-    
+            
+    int conn_socket = 0;
+    int ret_val = pthread_mutex_init(&mutex, NULL);
+    if (ret_val) {
+        syslog(LOG_ERR, "Error while creating the mutex instance, error: %s", strerror(ret_val));
+        terminate(EXIT_FAILURE);
+    }
+    mutex_initialized = true;
+
+    /* create thread to start dumping timestamps in output file */
+    struct sigevent sev = {0};
+    struct thread_information timer_thread_info;
+    memset(&timer_thread_info, 0, sizeof(struct thread_information));
+    timer_thread_info.filed = fd;
+    timer_thread_info.mutex_ptr = &mutex;
+    sev.sigev_notify = SIGEV_THREAD;
+    sev.sigev_value.sival_ptr = &timer_thread_info;
+    sev.sigev_notify_function = timer_thread_run_function;
+
+    struct itimerspec its = {0};
+    its.it_value.tv_sec = 1;
+    its.it_interval.tv_sec = 10;
+
+    if (timer_create(CLOCK_REALTIME, &sev, &timer_id) !=0 ) {
+        syslog(LOG_ERR, "Could not create timestamp timer object, error: %s", strerror(errno));
+        terminate(EXIT_FAILURE);
+    }
+    // fire timer
+    ret_val = timer_settime(timer_id, 0, &its, NULL);
+    if (ret_val != 0) {
+        syslog(LOG_ERR, "Failed to start time stamp time, error: %s", strerror(errno));
+        terminate(EXIT_FAILURE);
+    }
+
+
+    while ((conn_socket = accept(socket_fd, (struct sockaddr*)&address, (socklen_t*)&addr_length)) > 0) {
+        char* remote_ip_address = inet_ntoa(address.sin_addr);
+        syslog(LOG_NOTICE, "Accepted connection from %s", remote_ip_address);
+        
+        /* using calloc here cause it actually initializes the allocated memory */
+        struct thread_information* t_info = calloc(1, sizeof(struct thread_information));
+        if (t_info == NULL) {
+            syslog(LOG_ERR, "Failed to allocate memory for the thread information structure, error: %s", strerror(errno));
+            terminate(EXIT_FAILURE);
+        }
+        t_info->ip_address = calloc(1, strlen(remote_ip_address) + 1);
+        if (t_info->ip_address == NULL) {
+            syslog(LOG_ERR, "Failed to allocate memory to store the IP address of the remote party, error: %s", strerror(errno));
+            terminate(EXIT_FAILURE);
+        }
+        strcpy(t_info->ip_address, remote_ip_address);
+        t_info->socketd = conn_socket;
+        t_info->filed = fd;
+        t_info->mutex_ptr = &mutex;
+
+        /* spawn thread, check for errors */
+        int ret_val = pthread_create(&t_info->thread_id, NULL, thread_run_function, t_info);
+        if (ret_val) {
+            syslog(LOG_ERR, "Could not spawn thread for incoming connection, error: %s", strerror(ret_val));
+            free(t_info);
+            terminate(EXIT_FAILURE);
+        }
+
+        /* if everything is fine, add the thread to the list */
+        struct list_node* t_node = calloc(1, sizeof(struct list_node));
+        if (t_node == NULL) {
+            syslog(LOG_ERR, "Could not allocate memory to hold the list node for the thread just spawned, error: %s", strerror(errno));
+            /* kill thread just created */
+            /* kill all threads */
+            free(t_info);
+            terminate(EXIT_FAILURE);
+        }
+        t_node->ptr = t_info;
+        TAILQ_INSERT_TAIL(&head_node, t_node, nodes);
+
+    }
+
+    sync_and_close_output_file(fd);
+
     if (close(socket_fd) < 0) {
         syslog(LOG_ERR, "Shutdown failed on server socket: %d", errno);
         terminate(EXIT_FAILURE);
