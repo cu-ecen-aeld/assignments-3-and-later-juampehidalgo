@@ -145,6 +145,12 @@ int dump_buffer_to_file(char* buf_ptr, size_t buf_size, int filed) {
     size_t bytes_wrote_overall = 0;
     size_t bytes_wrote = 0;
 
+    /* let's move pointer to the very end of the file */
+    if (lseek(filed, 0, SEEK_END) < 0) {
+        syslog(LOG_ERR, "Could not move file pointer to the end of the file, error: %s", strerror(errno));
+        return errno;
+    }
+
     while ((bytes_wrote = write(filed, buf_ptr + bytes_wrote_overall, bytes_left_to_write)) < bytes_left_to_write) {
         if (bytes_wrote <= 0) {
             syslog(LOG_ERR, "Failure to write to output file, error: %s", strerror(errno));
