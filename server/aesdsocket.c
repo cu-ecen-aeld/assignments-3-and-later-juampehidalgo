@@ -325,7 +325,11 @@ int main(int argc, char* argv[]) {
                 syslog(LOG_ERR, "Failed to set new session ID for the daemon, error: %s", strerror(errno));
                 terminate(EXIT_FAILURE);
             }
-            chdir("/");
+            int ret_val = chdir("/");
+            if (ret_val < 0) {
+                syslog(LOG_ERR, "Failed to change directory to / when launching as daemon, error: %s", strerror(errno));
+                terminate(EXIT_FAILURE);
+            }
         }
     }
     
