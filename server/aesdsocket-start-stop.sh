@@ -7,13 +7,13 @@ do_start() {
     printf "Starting aesdsocket as daemon..."
     umask 077
     
-    start-stop-daemon -S -q -p /var/run/aesdsocket.pid --exec /usr/bin/aesdsocket -- $AESDSOCKET_ARGS
+    start-stop-daemon --start --quiet --name aesdsocket --exec /usr/bin/aesdsocket -- $AESDSOCKET_ARGS
     [ $? = 0 ] && echo "OK" || echo "FAIL"
 }
 
 do_stop() {
     printf "Stopping aesdsocket..."
-    start-stop-daemon -K -q -p /var/run/aesdsocket.pid -s SIGTERM
+    start-stop-daemon --stop --quit --name aesdsocket --signal SIGTERM
     [ $? = 0 ] && echo "OK" || echo "FAIL"
 }
 
