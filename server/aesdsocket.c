@@ -30,7 +30,7 @@
 /* Chapter 11 of Linux System Programming. Min 8:40 of week's 4 Sleeping and Timers video */
 struct list_node {
     struct thread_information* ptr;
-    TAILQ_ENTRY(list_node) nodes;
+    SLIST_ENTRY(list_node) nodes;
 };
 
 /* global variables */
@@ -41,7 +41,9 @@ char* output_file_path = "/var/tmp/aesdsocketdata";
 bool mutex_initialized = false;
 pthread_mutex_t mutex;
 timer_t timer_id = 0;
-TAILQ_HEAD(thread_list, list_node) head_node;
+SLIST_HEAD(slist_head, list_node);
+
+struct slist_head head_node;
 
 /* helper methods */
 void sync_and_close_output_file(int file_descriptor) {
@@ -68,8 +70,8 @@ void terminate(int termination_reason) {
 
     /* iterate through the list of threads and request their termination */
     struct list_node* current_node = NULL;
-    while (!TAILQ_EMPTY(&head_node)) {
-        current_node = TAILQ_FIRST(&head_node);
+    while (!SLIST_EMPTY(&head_node)) {
+        current_node = SLIST_FIRST(&head_node);
         /* send kill signal to thread */
         int ret_val = pthread_cancel(current_node->ptr->thread_id);
         if (ret_val) {
@@ -88,8 +90,8 @@ void terminate(int termination_reason) {
             }
         }
 
+        SLIST_REMOVE_HEAD(&head_node, nodes);
         free(current_node->ptr);
-        TAILQ_REMOVE(&head_node, current_node, nodes);
         free(current_node);
         current_node = NULL;
     }
@@ -186,7 +188,7 @@ int main(int argc, char* argv[]) {
     bool running_as_daemon = false;
     int opt_val = 1;
     int server_port = 9000;
-    TAILQ_INIT(&head_node);
+    SLIST_INIT(&head_node);
 
     openlog("aesdsocket", LOG_CONS | LOG_PERROR | LOG_PID, running_as_daemon ? LOG_DAEMON : LOG_USER);
     
@@ -417,7 +419,7 @@ int main(int argc, char* argv[]) {
             terminate(EXIT_FAILURE);
         }
         t_node->ptr = t_info;
-        TAILQ_INSERT_TAIL(&head_node, t_node, nodes);
+        SLIST_INSERT_HEAD(&head_node, t_node, nodes);
 
     }
 
