@@ -87,7 +87,8 @@ void* thread_run_function(void* args) {
 
 
     /* thread_info->thread_return_value = EXIT_SUCCESS; */
-    pthread_exit(&thread_info->thread_return_value);
+    /* pthread_exit(&thread_info->thread_return_value); */ /* No more use of pthread_exit since the Yocto image is missing one library and the process will crash when calling this */
+    return NULL;
 }
 
 int read_str_from_socket(int socketd, char** buf_ptr, size_t* buf_size) {
