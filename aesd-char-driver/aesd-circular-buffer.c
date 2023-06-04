@@ -32,6 +32,27 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
     /**
     * TODO: implement per description
     */
+    uint8_t entry_idx = buffer->out_offs;
+    uint8_t previous_idx = entry_idx;
+    size_t accummulated_off = 0;
+
+    while(accummulated_off <= char_offset) {
+        accummulated_off += buffer->entry[entry_idx].size;
+        previous_idx = entry_idx;
+        entry_idx = (entry_idx + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+
+        if (accummulated_off > char_offset) {
+            /* the character we want is pointed to by previous_idx */
+            accummulated_off -= buffer->entry[previous_idx].size;
+            *entry_offset_byte_rtn = char_offset - accummulated_off;
+            return &(buffer->entry[previous_idx]);
+        }
+
+        if (entry_idx == buffer->in_offs) {
+            /* got to the end of the buffer */
+            break;
+        }
+    }
     return NULL;
 }
 
@@ -47,6 +68,21 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
     /**
     * TODO: implement per description
     */
+
+    if (buffer->full) {
+
+        buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    }
+
+    /* in_offs points to the next position to populate, so simply add the new entry in that position */
+    buffer->entry[buffer->in_offs] = *add_entry;    
+
+    /* now we need to advance the pointer */
+    buffer->in_offs = (buffer->in_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+
+    if (buffer->in_offs == buffer->out_offs) {
+        buffer->full = true;
+    }
 }
 
 /**
