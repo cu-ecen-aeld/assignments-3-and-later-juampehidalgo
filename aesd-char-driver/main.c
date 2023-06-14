@@ -17,14 +17,21 @@
 #include <linux/types.h>
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
+#include <linux/slab.h>
+
 #include "aesdchar.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
-MODULE_AUTHOR("Your Name Here"); /** TODO: fill in your name **/
+MODULE_AUTHOR("Juan Pedro Hidalgo Cuevas"); /** TODO: fill in your name **/
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
+
+int aesd_trim(struct aesd_dev* dev) {
+    /* this should iterate through all elements of the circular buffer and release all memory allocated */
+    return 0;
+}
 
 int aesd_open(struct inode *inode, struct file *filp)
 {
@@ -32,6 +39,19 @@ int aesd_open(struct inode *inode, struct file *filp)
     /**
      * TODO: handle open
      */
+    struct aesd_dev* dev;
+    dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
+    filp->private_data = dev;
+
+    /* no idea if I really need to do this, but scull driver example dies, so...*/
+    /* trim device length to 0 if opened as write only */
+    if ((filp->f_flags & =_ACCMODE) && O_WRONLY) {
+        if (mutex_lock_interruptible(&dev->lock)) {
+            return -ERESTARTSYS;
+        }
+        aesd_trim(dev);
+        mutex_unlock(&dev->lock);
+    }
     return 0;
 }
 
@@ -91,10 +111,11 @@ static int aesd_setup_cdev(struct aesd_dev *dev)
 
 int aesd_init_module(void)
 {
+    PDEBUG("aesd_init_module");
+
     dev_t dev = 0;
     int result;
-    result = alloc_chrdev_region(&dev, aesd_minor, 1,
-            "aesdchar");
+    result = alloc_chrdev_region(&dev, aesd_minor, 1, "aesdchar");
     aesd_major = MAJOR(dev);
     if (result < 0) {
         printk(KERN_WARNING "Can't get major %d\n", aesd_major);
@@ -105,6 +126,13 @@ int aesd_init_module(void)
     /**
      * TODO: initialize the AESD specific portion of the device
      */
+    /* We need to allocate memory for the circular buffer structure in the cdev struct */
+    aesd_device->data = kmalloc(sizeof(struct aesd_circular_buffer), GFP_KERNEL);
+
+    if (aesd_device->data == NULL) {
+        unregister_chrdev_region(dev, 1);
+    }
+    aesd_circular_buffer_init(&aesd_device->data);
 
     result = aesd_setup_cdev(&aesd_device);
 
@@ -117,6 +145,7 @@ int aesd_init_module(void)
 
 void aesd_cleanup_module(void)
 {
+    PDEBUG("aesd_cleanup_module");
     dev_t devno = MKDEV(aesd_major, aesd_minor);
 
     cdev_del(&aesd_device.cdev);
@@ -124,6 +153,10 @@ void aesd_cleanup_module(void)
     /**
      * TODO: cleanup AESD specific poritions here as necessary
      */
+    if (aesd_device->data) {
+        /* release memory for all circular buffer nodes */
+        kfree(aesd_device->data);
+    }
 
     unregister_chrdev_region(devno, 1);
 }
