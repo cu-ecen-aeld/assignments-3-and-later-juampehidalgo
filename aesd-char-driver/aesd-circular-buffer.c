@@ -10,6 +10,8 @@
 
 #ifdef __KERNEL__
 #include <linux/string.h>
+#include <linux/slab.h>
+#include <linux/kernel.h>
 #else
 #include <string.h>
 #endif
@@ -68,9 +70,19 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
     /**
     * TODO: implement per description
     */
+    struct aesd_buffer_entry* tmp_entry = NULL;
+    
+    printk(KERN_DEBUG "Adding new entry to the circular buffer: %p with %ld bytes", add_entry->buffptr, add_entry->size);
 
     if (buffer->full) {
-
+        printk(KERN_DEBUG "Overwriting position in circular buffer");
+        // although the function doc says it clearly, we should be freeing memmory here for the overwritten positions
+        // before the reference is lost forever
+        tmp_entry = &(buffer->entry[buffer->out_offs]);
+        if (tmp_entry && tmp_entry->buffptr) {
+            kfree(tmp_entry->buffptr);
+            kfree(tmp_entry);
+        }
         buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
     }
 

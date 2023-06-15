@@ -49,38 +49,31 @@ if [ -r $CFG ]; then
     MODE=`awk "\\$1==\"mode\" {print \\$2}" $CFG`
     # The options string may include extra blanks or only blanks
     OPTIONS=`sed -n '/^options / s/options //p' $CFG`
+else
+    OWNER="root"
+    # Group: since distributions do it differently, look for wheel or use staff
+    if grep -q '^staff:' /etc/group; then
+        GROUP="staff"
+    else
+        GROUP="wheel"
+    fi
+    MODE="666"
 fi
 
 
-# Create device files
-function create_files () {
+# Create device file
+function create_file () {
     cd /dev
-    local devlist=""
-    local file
-    while true; do
-	if [ $# -lt 2 ]; then break; fi
-	file="${DEVICE}$1"
-	mknod $file c $MAJOR $2
-	devlist="$devlist $file"
-	shift 2
-    done
-    if [ -n "$OWNER" ]; then chown $OWNER $devlist; fi
-    if [ -n "$GROUP" ]; then chgrp $GROUP $devlist; fi
-    if [ -n "$MODE"  ]; then chmod $MODE  $devlist; fi
+    mknod ${DEVICE} c $MAJOR 0
+    if [ -n "$OWNER" ]; then chown $OWNER ${DEVICE}; fi
+    if [ -n "$GROUP" ]; then chgrp $GROUP ${DEVICE}; fi
+    if [ -n "$MODE"  ]; then chmod $MODE  ${DEVICE}; fi
 }
 
-# Remove device files
-function remove_files () {
+# Remove device file
+function remove_file () {
     cd /dev
-    local devlist=""
-    local file
-    while true; do
-	if [ $# -lt 2 ]; then break; fi
-	file="${DEVICE}$1"
-	devlist="$devlist $file"
-	shift 2
-    done
-    rm -f $devlist
+    rm -f ${DEVICE}
 }
 
 # Load and create files
@@ -103,8 +96,8 @@ function load_device () {
 
     if $INSMOD $devpath $OPTIONS; then
 	MAJOR=`awk "\\$2==\"$DEVICE\" {print \\$1}" /proc/devices`
-	remove_files $FILES
-	create_files $FILES
+	remove_file
+	create_file
 	device_specific_post_load
     else
 	echo " FAILED!"
@@ -115,7 +108,7 @@ function load_device () {
 function unload_device () {
     device_specific_pre_unload 
     /sbin/rmmod $DEVICE
-    remove_files $FILES
+    remove_file
 }
 
 
