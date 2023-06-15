@@ -4,10 +4,12 @@
  *  Created on: Oct 23, 2019
  *      Author: Dan Walkes
  */
-#include "aesd-circular-buffer.h"
-
 #ifndef AESD_CHAR_DRIVER_AESDCHAR_H_
 #define AESD_CHAR_DRIVER_AESDCHAR_H_
+
+#include "aesd-circular-buffer.h"
+#include <linux/mutex.h>
+#include <linux/cdev.h>
 
 #define AESD_DEBUG 1  //Remove comment on this line to enable debug
 
@@ -24,6 +26,9 @@
 #  define PDEBUG(fmt, args...) /* not debugging: nothing */
 #endif
 
+#define AESD_CHAR_MAJOR 0
+#define AESD_CHAR_NUM_DEVS 1
+
 struct aesd_dev
 {
     /**
@@ -34,5 +39,12 @@ struct aesd_dev
     struct cdev cdev;     /* Char device structure      */
 };
 
+/* Function prototypes */
+//int aesd_open(struct inode* inode, struct file* filp);
+//int aesd_release(struct inode* inode, struct file* filp);
+//ssize_t aesd_read(struct file* filp, char* __user buf, size_t count, loff_t* f_pos);
+//ssize_t aesd_write(struct file* filp, const char* __user buf, size_t count, loff_t* f_pos);
+static int aesd_init_module(void);
+static void aesd_cleanup_module(void);
 
 #endif /* AESD_CHAR_DRIVER_AESDCHAR_H_ */
