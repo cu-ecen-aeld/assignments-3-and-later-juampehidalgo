@@ -35,6 +35,8 @@ struct aesd_dev
      * TODO: Add structure(s) and locks needed to complete assignment requirements
      */
     struct aesd_circular_buffer* data;
+    char* temporary_command_buffer;
+    size_t current_temporary_buffer_size;
     struct mutex lock;
     struct cdev cdev;     /* Char device structure      */
 };

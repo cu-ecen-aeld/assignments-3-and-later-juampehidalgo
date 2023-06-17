@@ -76,18 +76,17 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
 
     if (buffer->full) {
         printk(KERN_DEBUG "Overwriting position in circular buffer");
-        // although the function doc says it clearly, we should be freeing memmory here for the overwritten positions
-        // before the reference is lost forever
+        // entries themselves are part of the overall structure, so we just need to free the buffer that contains the command itself
         tmp_entry = &(buffer->entry[buffer->out_offs]);
-        if (tmp_entry && tmp_entry->buffptr) {
+        if (tmp_entry->buffptr) {
             kfree(tmp_entry->buffptr);
-            kfree(tmp_entry);
         }
         buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
     }
 
     /* in_offs points to the next position to populate, so simply add the new entry in that position */
-    buffer->entry[buffer->in_offs] = *add_entry;    
+    buffer->entry[buffer->in_offs].buffptr = add_entry->buffptr;
+    buffer->entry[buffer->in_offs].size = add_entry->size;
 
     /* now we need to advance the pointer */
     buffer->in_offs = (buffer->in_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
