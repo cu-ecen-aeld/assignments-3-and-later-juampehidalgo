@@ -117,7 +117,9 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
     if (count) {
         while (read_count < count) {
             PDEBUG("aesd_read: read loop, read_count %zu, count %zu, *f_pos %lld", read_count, count, *f_pos);
+            mutex_lock(&dev->lock);
             buffentry = aesd_circular_buffer_find_entry_offset_for_fpos(dev->data, *f_pos, &entry_offset);
+            mutex_unlock(&dev->lock);
             if (buffentry) {
 #ifdef AESD_DEBUG
                 memset(tmp_entry, 0, sizeof(tmp_entry));
@@ -161,6 +163,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
             /* At least one command terminator was found at position idx, so let's copy over that specific chunk into temporary buffer, add it to the circular buffer */
             /* and then resize the buffer to hold the remaining of the input (and then loop again just in case multiple command in same write)*/
             /* 1. Now let's use krealloc to allocate/reallocate that buffer to be able to also hold the current chunk of bytes being written */
+            mutex_lock(&dev->lock);
             PDEBUG("Prior to reallocation, temporary_command_buffer was at %p with length %ld", dev->temporary_command_buffer, dev->current_temporary_buffer_size);
             buffer = krealloc(dev->temporary_command_buffer, dev->current_temporary_buffer_size + idx + 1, GFP_KERNEL);
             if (buffer)
@@ -185,9 +188,11 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
                 /* now advance idx and off to keep looking for command terminators in the input buffer*/
                 off = idx + 1;
                 idx = 0;
+                mutex_unlock(&dev->lock);
             }
             else
             {
+                mutex_unlock(&dev->lock);
                 printk(KERN_WARNING "Could not allocate/extend buffer to hold incoming command");
                 return -ENOMEM;
             }
@@ -203,6 +208,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     {
         /* Got to the end of the buf and found not terminator, reallocate temporary buffer, copy over contents and exit */
         PDEBUG("aesd_write: no command terminator found in this input chunk");
+        mutex_lock(&dev->lock);
         PDEBUG("aesd_write: prior to allocation, temporary_command_buffer was at %p with length %ld", dev->temporary_command_buffer, dev->current_temporary_buffer_size);
         /* 1. Now let's use krealloc to allocate/reallocate that buffer to be able to also hold the current chunk of bytes being written */
         buffer = krealloc(dev->temporary_command_buffer, idx + dev->current_temporary_buffer_size, GFP_KERNEL);
@@ -214,16 +220,18 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
             memcpy(dev->temporary_command_buffer + dev->current_temporary_buffer_size, buf + off, idx);
             PDEBUG("Copied %ld bytes from position %ld of input buffer to position %ld of internal buffer", idx, off, dev->current_temporary_buffer_size);
             dev->current_temporary_buffer_size += idx;
+            mutex_unlock(&dev->lock);
         }
         else
         {
+            mutex_unlock(&dev->lock);
             printk(KERN_WARNING "Could not allocate/extend buffer to hold incoming command");
             return -ENOMEM;
         }
     }
 
     print_circular_buffer_content(dev->data);
-
+    *f_pos += count;
     return count;
 }
 
@@ -340,6 +348,7 @@ static void aesd_cleanup_module(void)
 
     if (aesd_device)
     {
+        mutex_destroy(&aesd_device->lock);
         kfree(aesd_device);
 
         PDEBUG("aesd_cleanup_module: release memory for the aesd_device structure");
