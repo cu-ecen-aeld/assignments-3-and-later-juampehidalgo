@@ -39,12 +39,29 @@ struct aesd_dev *aesd_device; // allocated and initialized in the init method
 struct file_operations aesd_fops = {
     .owner = THIS_MODULE,
     .llseek = NULL,
-    .read = NULL,
+    .read = aesd_read,
     .write = aesd_write,
     .unlocked_ioctl = NULL,
     .open = aesd_open,
     .release = aesd_release,
 };
+
+void print_circular_buffer_content(struct aesd_circular_buffer* buffer) {
+    struct aesd_buffer_entry* entry = NULL;
+    size_t index = 0;
+    char tmp_buffer[512] = { 0 };
+
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, aesd_device->data, index)
+    {
+        if (entry)
+        {
+            memset(tmp_buffer, 0, sizeof(tmp_buffer));
+            memcpy(tmp_buffer, entry->buffptr, (512 - entry->size) > 1 ? entry->size : 511);
+            PDEBUG("Entry with %ld bytes string at %p, with contents %s", entry->size, entry->buffptr, tmp_buffer);
+        }
+    }
+
+}
 
 // char* temporary_command_buffer = NULL;
 // size_t current_temporary_buffer_size  = 0;
@@ -80,23 +97,53 @@ int aesd_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
-// ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
-//                 loff_t *f_pos)
-// {
-//     ssize_t retval = 0;
-//     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
-//     /**
-//      * TODO: handle read
-//      */
-//     return retval;
-// }
+ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+{
+    ssize_t read_count = 0;
+    struct aesd_buffer_entry* buffentry = NULL;
+    struct aesd_dev* dev = filp->private_data;
+    size_t entry_offset = 0;
+    /* For DEBUG purposes only */
+#ifdef AESD_DEBUG
+    char tmp_entry[512] = {0};
+#endif
+
+    PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
+    print_circular_buffer_content(dev->data);
+    /**
+     * TODO: handle read
+     */
+    /* only return something if we at least found an entry which contains the starting position AND we're asked to return count > 0 bytes */
+    if (count) {
+        while (read_count < count) {
+            PDEBUG("aesd_read: read loop, read_count %zu, count %zu, *f_pos %lld", read_count, count, *f_pos);
+            buffentry = aesd_circular_buffer_find_entry_offset_for_fpos(dev->data, *f_pos, &entry_offset);
+            if (buffentry) {
+#ifdef AESD_DEBUG
+                memset(tmp_entry, 0, sizeof(tmp_entry));
+                memcpy(tmp_entry, buffentry->buffptr, buffentry->size > 511 ? 511 : buffentry->size);
+                PDEBUG("Found a buffer entry for offset %lld, with size %zu and contents %s. Will copy %zu bytes to %p", *f_pos, buffentry->size, tmp_entry, (count - read_count) > buffentry->size ? buffentry->size : count - read_count, buf + read_count);
+#endif
+                /* we will always honor read requests, even if the buffer does not contain the full set of bytes requested */
+                memcpy(buf + read_count, buffentry->buffptr, (count - read_count) > buffentry->size ? buffentry->size : count - read_count);
+                read_count += buffentry->size;
+                *f_pos += buffentry->size;
+            } else {
+                /* we got to the end of the circular buffer before retrieving count bytes, so parcial read... must return */
+                PDEBUG("Reached the end of the buffer before copying all requested bytes: %zu were requested, %zu were copied", count, read_count);
+                break;
+            }
+        }
+    }
+    return read_count;
+}
 
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
     // ssize_t retval = 0;
     char *buffer = NULL;
     struct aesd_buffer_entry buffentry = { 0 };
-    struct aesd_dev *dev = filp->private_data;
+    struct aesd_dev* dev = filp->private_data;
     size_t idx = 0;
     size_t off = 0;
 
@@ -175,6 +222,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
         }
     }
 
+    print_circular_buffer_content(dev->data);
+
     return count;
 }
 
@@ -182,8 +231,6 @@ static int __init aesd_init_module(void)
 {
     dev_t dev = 0;
     int result;
-    struct aesd_buffer_entry *entry = NULL;
-    uint8_t index;
 
     PDEBUG("aesd_init_module: major=%d (module parameter provided)", aesd_char_major);
 
@@ -234,14 +281,7 @@ static int __init aesd_init_module(void)
     PDEBUG("aesd_init_module: allocated memory to hold the circular buffer structure (%ld bytes)", sizeof(struct aesd_circular_buffer));
     aesd_circular_buffer_init(aesd_device->data);
     PDEBUG("aesd_init_module: how does the circular buffer look like after initialization:");
-    AESD_CIRCULAR_BUFFER_FOREACH(entry, aesd_device->data, index)
-    {
-        PDEBUG("Now looking at entry at %p", entry);
-        if (entry)
-        {
-            PDEBUG("Entry with %ld bytes string at %p", entry->size, entry->buffptr);
-        }
-    }
+    print_circular_buffer_content(aesd_device->data);
 
     cdev_init(&aesd_device->cdev, &aesd_fops);
     aesd_device->cdev.owner = THIS_MODULE;
