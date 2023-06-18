@@ -1,9 +1,10 @@
 CC ?= $(CROSS_COMPILE)gcc
 
 
+AESD_CHAR_DEVICE ?=
 INCLUDES:= -I ./include
 LIBS:= -L./libs 
-CFLAGS ?= -g -Wall -Werror
+CFLAGS ?= -g -Wall -Werror $(AESD_CHAR_DEVICE)
 LDFLAGS ?= -lrt -pthread
 TARGET ?= aesdsocket
 

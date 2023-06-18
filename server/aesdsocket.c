@@ -37,7 +37,11 @@ struct list_node {
 int server_socket_descriptor = 0;
 int output_file_descriptor = 0;
 int connection_socket_descriptor = 0;
+#ifdef AESD_CHAR_DEVICE
+char* output_file_path = "/dev/aesdchar";
+#else
 char* output_file_path = "/var/tmp/aesdsocketdata";
+#endif
 bool mutex_initialized = false;
 pthread_mutex_t mutex;
 timer_t timer_id = 0;
