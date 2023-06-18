@@ -137,6 +137,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
             }
         }
     }
+    PDEBUG("Returning %ld bytes read", read_count);
     return read_count;
 }
 
@@ -231,7 +232,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     }
 
     print_circular_buffer_content(dev->data);
-    *f_pos += count;
+    //*f_pos += count;
     return count;
 }
 

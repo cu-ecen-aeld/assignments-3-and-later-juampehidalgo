@@ -12,6 +12,7 @@
 
 #define TMP_BUF_SIZE 1024
 #define CHUNK_SIZE 512
+#define USE_AESD_CHAR_DEVICE 1
 
 void* thread_run_function(void* args) {
     struct thread_information* thread_info = args;
@@ -65,6 +66,7 @@ void* thread_run_function(void* args) {
             break;
         }
         /* let's flush and make sure contents of file are there before releasing lock */
+#ifndef USE_AESD_CHAR_DEVICE
         if (fsync(filed) < 0) {
             syslog(LOG_ERR, "Failed to sync output file from thread ID %ld, error: %s", pthread_self(), strerror(errno));
             if (buffer != NULL) {
@@ -75,6 +77,7 @@ void* thread_run_function(void* args) {
             pthread_mutex_unlock(thread_info->mutex_ptr);
             break;
         }
+#endif
 
         /* now dump complete file contents to remote party */
         ret_val = dump_file_to_socket(filed, thread_info->socketd);
@@ -175,10 +178,12 @@ int dump_buffer_to_file(char* buf_ptr, size_t buf_size, int filed) {
     size_t bytes_wrote = 0;
 
     /* let's move pointer to the very end of the file */
+#ifndef USE_AESD_CHAR_DEVICE
     if (lseek(filed, 0, SEEK_END) < 0) {
         syslog(LOG_ERR, "Could not move file pointer to the end of the file, error: %s", strerror(errno));
         return errno;
     }
+#endif
 
     while ((bytes_wrote = write(filed, buf_ptr + bytes_wrote_overall, bytes_left_to_write)) < bytes_left_to_write) {
         if (bytes_wrote <= 0) {
@@ -195,6 +200,7 @@ int dump_buffer_to_file(char* buf_ptr, size_t buf_size, int filed) {
 
 int dump_file_to_socket(int filed, int socketd) {
     /* make a backup of the current file pointer */
+#ifndef USE_AESD_CHAR_DEVICE
     off_t current_file_offset = lseek(filed, 0, SEEK_CUR);
     if (current_file_offset < 0) {
         syslog(LOG_ERR, "Could not retrieve the current file offset, error: %s", strerror(errno));
@@ -206,6 +212,7 @@ int dump_file_to_socket(int filed, int socketd) {
         return errno;
     }
     syslog(LOG_NOTICE, "Moved file pointer to beginning of file");
+#endif
     /* now start reading the file and sending to socket */
     char buf[TMP_BUF_SIZE] = {0};
     int bytes_read = 0;
@@ -217,9 +224,11 @@ int dump_file_to_socket(int filed, int socketd) {
             if (bytes_wrote < 0) {
                 syslog(LOG_ERR, "Failed to write a chunk of information to socket, error: %s", strerror(errno));
                 /* restore original file pointer, if possible */
+#ifndef USE_AESD_CHAR_DEVICE
                 if (lseek(filed, current_file_offset, SEEK_SET) < 0) {
                     syslog(LOG_WARNING, "Could not restore the output file pointer to its original value, error: %s", strerror(errno));
                 }
+#endif
                 return errno;
             }
             write_ptr += bytes_wrote;
@@ -230,10 +239,11 @@ int dump_file_to_socket(int filed, int socketd) {
         syslog(LOG_ERR, "Error reading from the source file, error: %s", strerror(errno));
         return errno;
     }
+#ifndef USE_AESD_CHAR_DEVICE
     /* restore original file pointer, if possible */
     if (lseek(filed, current_file_offset, SEEK_SET) < 0) {
         syslog(LOG_WARNING, "Could not restore the output file pointer to its original value, error: %s", strerror(errno));
     }
-
+#endif
     return 0;
 }
