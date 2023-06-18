@@ -3,8 +3,11 @@
 #include <unistd.h>
 #include <syslog.h>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <string.h>
+
 
 
 #define TMP_BUF_SIZE 1024
@@ -15,6 +18,7 @@ void* thread_run_function(void* args) {
     syslog(LOG_INFO, "Thread with ID: %ld spawned to handle incoming connection", pthread_self());
     char* buffer;
     size_t buffer_size;
+    int filed = 0;
 
     while (true) {
         buffer = NULL;
@@ -41,25 +45,56 @@ void* thread_run_function(void* args) {
             thread_info->thread_return_value = EXIT_FAILURE;
             break;
         }
-        ret_val = dump_buffer_to_file(buffer, buffer_size, thread_info->filed);
+        
+        filed = open(thread_info->file_name, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+        if (filed < 0) {
+            syslog(LOG_ERR, "Could not open/create output file at %s, error: %s", thread_info->file_name, strerror(errno));
+            thread_info->thread_return_value = EXIT_FAILURE;
+            pthread_mutex_unlock(thread_info->mutex_ptr);
+            break;
+        }
+
+        ret_val = dump_buffer_to_file(buffer, buffer_size, filed);
         if (ret_val) {
             if (buffer != NULL) {
                 free(buffer);
                 buffer = NULL;
             }
             thread_info->thread_return_value = EXIT_FAILURE;
+            pthread_mutex_unlock(thread_info->mutex_ptr);
             break;
         }
         /* let's flush and make sure contents of file are there before releasing lock */
-        if (fsync(thread_info->filed) < 0) {
-            syslog(LOG_ERR, "Failed to sync outout file from thread ID %ld, error: %s", pthread_self(), strerror(errno));
+        if (fsync(filed) < 0) {
+            syslog(LOG_ERR, "Failed to sync output file from thread ID %ld, error: %s", pthread_self(), strerror(errno));
             if (buffer != NULL) {
                 free(buffer);
                 buffer = NULL;
             }
             thread_info->thread_return_value = EXIT_FAILURE;
+            pthread_mutex_unlock(thread_info->mutex_ptr);
             break;
         }
+
+        /* now dump complete file contents to remote party */
+        ret_val = dump_file_to_socket(filed, thread_info->socketd);
+        if (ret_val) {
+            thread_info->thread_return_value = EXIT_FAILURE;
+            pthread_mutex_unlock(thread_info->mutex_ptr);
+            break;
+        }
+        /* let's close and make sure contents of file are there before releasing lock */
+        if (close(filed) < 0) {
+            syslog(LOG_ERR, "Failed to close output file from thread ID %ld, error: %s", pthread_self(), strerror(errno));
+            if (buffer != NULL) {
+                free(buffer);
+                buffer = NULL;
+            }
+            thread_info->thread_return_value = EXIT_FAILURE;
+            pthread_mutex_unlock(thread_info->mutex_ptr);
+            break;
+        }
+
         /* release mutex, we're done writing to the file from this thread */
         ret_val = pthread_mutex_unlock(thread_info->mutex_ptr);
         if (ret_val) {
@@ -76,13 +111,6 @@ void* thread_run_function(void* args) {
             free(buffer);
             buffer = NULL;
         }
-        /* now dump complete file contents to remote party */
-        ret_val = dump_file_to_socket(thread_info->filed, thread_info->socketd);
-        if (ret_val) {
-            thread_info->thread_return_value = EXIT_FAILURE;
-            break;
-        }
-
     }
 
 

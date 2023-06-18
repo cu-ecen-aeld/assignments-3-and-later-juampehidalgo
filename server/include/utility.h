@@ -6,7 +6,7 @@ struct thread_information {
     pthread_mutex_t* mutex_ptr;
     char* ip_address;
     int socketd;
-    int filed;
+    char* file_name;
     int thread_return_value;
 };
 

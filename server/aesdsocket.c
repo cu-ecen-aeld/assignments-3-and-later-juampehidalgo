@@ -1,12 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <stdbool.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <syslog.h>
@@ -14,11 +12,14 @@
 #include <pthread.h>
 #include <signal.h>
 #include <time.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include "queue.h"
 #include "utility.h"
 
-#define USE_AESD_CHAR_DEVICE=1
+#define USE_AESD_CHAR_DEVICE = 1
 
 /* unistd.h defines sleep, usleep & nanosleep */
 /* clock_nanosleep */
@@ -52,16 +53,6 @@ SLIST_HEAD(slist_head, list_node);
 struct slist_head head_node;
 
 /* helper methods */
-void sync_and_close_output_file(int file_descriptor) {
-    if (file_descriptor && fsync(file_descriptor) < 0) {
-        syslog(LOG_WARNING, "Failed to flush output file, error %d", errno);
-    }
-#ifndef USE_AESD_CHAR_DEVICE
-    if (file_descriptor && close(file_descriptor) < 0) {
-        syslog(LOG_WARNING, "Failed to close output file, error %d", errno);
-    }
-#endif
-}
 
 void close_socket(int sd) {
     if (sd && close(sd) < 0) {
@@ -97,6 +88,9 @@ void terminate(int termination_reason) {
                 free(current_node->ptr->ip_address);
             }
         }
+        if (current_node->ptr->file_name) {
+            free(current_node->ptr->file_name);
+        }
 
         SLIST_REMOVE_HEAD(&head_node, nodes);
         free(current_node->ptr);
@@ -110,12 +104,13 @@ void terminate(int termination_reason) {
             syslog(LOG_WARNING, "Failed to destroy mutex instance during cleanup, error: %s", strerror(ret_val));
         }
     }
-    sync_and_close_output_file(output_file_descriptor);
     close_socket(server_socket_descriptor);
+#ifndef USE_AESD_CHAR_DEVICE
     if (remove(output_file_path) < 0) {
         syslog(LOG_ERR, "Failed to remove the file at %s upon termination, error: %s", output_file_path, strerror(errno));
         exit(EXIT_FAILURE);
     }
+#endif
     exit(termination_reason);
 }
 
@@ -351,13 +346,6 @@ int main(int argc, char* argv[]) {
         syslog(LOG_ERR, "Socket listen failed: %d", errno);
         terminate(EXIT_FAILURE);
     }
-
-    // open output file for write with create flag on
-    int fd = open(output_file_path, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
-    if (fd < 0) {
-        syslog(LOG_ERR, "Could not open/create output file at %s, error %d", output_file_path, errno);
-        terminate(EXIT_FAILURE);
-    }
             
     int conn_socket = 0;
     int ret_val = pthread_mutex_init(&mutex, NULL);
@@ -408,17 +396,27 @@ int main(int argc, char* argv[]) {
         t_info->ip_address = calloc(1, strlen(remote_ip_address) + 1);
         if (t_info->ip_address == NULL) {
             syslog(LOG_ERR, "Failed to allocate memory to store the IP address of the remote party, error: %s", strerror(errno));
+            free(t_info);
             terminate(EXIT_FAILURE);
         }
         strcpy(t_info->ip_address, remote_ip_address);
         t_info->socketd = conn_socket;
-        t_info->filed = fd;
+        t_info->file_name = calloc(1, strlen(output_file_path) + 1);
+        if (t_info->file_name == NULL) {
+            syslog(LOG_ERR, "Failed to allocate memory to store the file name of output file, error: %s", strerror(errno));
+            free(t_info->ip_address);
+            free(t_info);
+            terminate(EXIT_FAILURE);
+        }
+        strcpy(t_info->file_name, output_file_path);
         t_info->mutex_ptr = &mutex;
 
         /* spawn thread, check for errors */
         int ret_val = pthread_create(&t_info->thread_id, NULL, thread_run_function, t_info);
         if (ret_val) {
             syslog(LOG_ERR, "Could not spawn thread for incoming connection, error: %s", strerror(ret_val));
+            free(t_info->ip_address);
+            free(t_info->file_name);
             free(t_info);
             terminate(EXIT_FAILURE);
         }
@@ -429,6 +427,8 @@ int main(int argc, char* argv[]) {
             syslog(LOG_ERR, "Could not allocate memory to hold the list node for the thread just spawned, error: %s", strerror(errno));
             /* kill thread just created */
             /* kill all threads */
+            free(t_info->ip_address);
+            free(t_info->file_name);
             free(t_info);
             terminate(EXIT_FAILURE);
         }
@@ -436,8 +436,6 @@ int main(int argc, char* argv[]) {
         SLIST_INSERT_HEAD(&head_node, t_node, nodes);
 
     }
-
-    sync_and_close_output_file(fd);
 
     if (close(socket_fd) < 0) {
         syslog(LOG_ERR, "Shutdown failed on server socket: %d", errno);
