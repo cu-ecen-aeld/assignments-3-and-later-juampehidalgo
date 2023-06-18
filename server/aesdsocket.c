@@ -37,7 +37,7 @@ struct list_node {
 int server_socket_descriptor = 0;
 int output_file_descriptor = 0;
 int connection_socket_descriptor = 0;
-#ifdef AESD_CHAR_DEVICE
+#ifdef USE_AESD_CHAR_DEVICE
 char* output_file_path = "/dev/aesdchar";
 #else
 char* output_file_path = "/var/tmp/aesdsocketdata";
@@ -54,9 +54,11 @@ void sync_and_close_output_file(int file_descriptor) {
     if (file_descriptor && fsync(file_descriptor) < 0) {
         syslog(LOG_WARNING, "Failed to flush output file, error %d", errno);
     }
+#ifndef USE_AESD_CHAR_DEVICE
     if (file_descriptor && close(file_descriptor) < 0) {
         syslog(LOG_WARNING, "Failed to close output file, error %d", errno);
     }
+#endif
 }
 
 void close_socket(int sd) {
@@ -157,6 +159,8 @@ enum program_parameters {
     OUTPUT_FILE
 };
 
+#ifndef USE_AESD_CHAR_DEVICE
+
 static void timer_thread_run_function(union sigval sigval) {
     struct thread_information* thread_info = (struct thread_information*)sigval.sival_ptr;
     if (pthread_mutex_lock(thread_info->mutex_ptr) != 0) {
@@ -186,6 +190,8 @@ static void timer_thread_run_function(union sigval sigval) {
     	}
     }
 }
+
+#endif
 
 int main(int argc, char* argv[]) {
 
@@ -359,6 +365,8 @@ int main(int argc, char* argv[]) {
     }
     mutex_initialized = true;
 
+#ifndef USE_AESD_CHAR_DEVICE
+
     /* create thread to start dumping timestamps in output file */
     struct sigevent sev = {0};
     struct thread_information timer_thread_info;
@@ -383,7 +391,7 @@ int main(int argc, char* argv[]) {
         syslog(LOG_ERR, "Failed to start time stamp time, error: %s", strerror(errno));
         terminate(EXIT_FAILURE);
     }
-
+#endif
 
     while ((conn_socket = accept(socket_fd, (struct sockaddr*)&address, (socklen_t*)&addr_length)) > 0) {
         char* remote_ip_address = inet_ntoa(address.sin_addr);

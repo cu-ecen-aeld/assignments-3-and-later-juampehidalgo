@@ -1,10 +1,14 @@
 CC ?= $(CROSS_COMPILE)gcc
 
 
-AESD_CHAR_DEVICE ?=
+ifeq ($(USE_AESD_CHAR_DEVICE), 1)
+DEFINE_AESD_CHAR_DEVICE = -DUSE_AESD_CHAR_DEVICE=1
+else
+DEFINE_AESD_CHAR_DEVICE =
+endif
 INCLUDES:= -I ./include
 LIBS:= -L./libs 
-CFLAGS ?= -g -Wall -Werror $(AESD_CHAR_DEVICE)
+CFLAGS ?= -g -Wall -Werror $(DEFINE_AESD_CHAR_DEVICE)
 LDFLAGS ?= -lrt -pthread
 TARGET ?= aesdsocket
 
