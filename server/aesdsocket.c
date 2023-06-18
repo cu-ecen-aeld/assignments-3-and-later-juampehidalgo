@@ -18,6 +18,8 @@
 #include "queue.h"
 #include "utility.h"
 
+#define USE_AESD_CHAR_DEVICE=1
+
 /* unistd.h defines sleep, usleep & nanosleep */
 /* clock_nanosleep */
 /* always use CLOCK_MONOTONIC for clock type */
