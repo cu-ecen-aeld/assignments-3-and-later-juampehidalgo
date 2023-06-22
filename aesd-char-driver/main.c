@@ -24,6 +24,8 @@
 
 #include "aesdchar.h"
 
+#define TMP_BUFFER_SIZE 512
+
 static int aesd_char_major = AESD_CHAR_MAJOR;
 static int aesd_char_minor = 0;
 static int aesd_char_num_devs = AESD_CHAR_NUM_DEVS;
@@ -38,10 +40,10 @@ MODULE_LICENSE("Dual BSD/GPL");
 struct aesd_dev *aesd_device; // allocated and initialized in the init method
 struct file_operations aesd_fops = {
     .owner = THIS_MODULE,
-    .llseek = NULL,
+    .llseek = aesd_llseek,
     .read = aesd_read,
     .write = aesd_write,
-    .unlocked_ioctl = NULL,
+    .unlocked_ioctl = aesd_unlocked_ioctl,
     .open = aesd_open,
     .release = aesd_release,
 };
@@ -97,47 +99,72 @@ int aesd_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
+loff_t aesd_llseek(struct file *filp, loff_t off, int whence) {
+    struct aesd_dev* dev = filp->private_data;
+    loff_t current_offset = filp->f_pos;
+
+    size_t circular_buffer_length = 0;
+    loff_t offset = 0;
+
+    PDEBUG("llseek with offset %lld and whence %d, current file offset is %lld", off, whence, current_offset);
+
+    mutex_lock(&dev->lock);
+    circular_buffer_length = aesd_circular_buffer_content_length(dev->data);
+
+    offset = fixed_size_llseek(filp, off, whence, circular_buffer_length);
+    PDEBUG("aesd_llseek: buffer size is %ld and offset returned by fixed_size_llseek is %lld", circular_buffer_length, offset);
+
+    mutex_unlock(&dev->lock);
+    return offset;
+
+}
+
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     ssize_t read_count = 0;
+    ssize_t transfer_size = 0;
+    ssize_t num_bytes_to_read = 0;
     struct aesd_buffer_entry* buffentry = NULL;
     struct aesd_dev* dev = filp->private_data;
     size_t entry_offset = 0;
+    size_t circular_buffer_length = 0;
     /* For DEBUG purposes only */
-#ifdef AESD_DEBUG
-    char tmp_entry[512] = {0};
-#endif
 
     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
     print_circular_buffer_content(dev->data);
-    /**
-     * TODO: handle read
-     */
-    /* only return something if we at least found an entry which contains the starting position AND we're asked to return count > 0 bytes */
-    if (count) {
-        while (read_count < count) {
-            PDEBUG("aesd_read: read loop, read_count %zu, count %zu, *f_pos %lld", read_count, count, *f_pos);
-            mutex_lock(&dev->lock);
+
+    mutex_lock(&dev->lock);
+    /* get current size of all entries in the circular buffer */
+    circular_buffer_length = aesd_circular_buffer_content_length(dev->data);    // need to lock before I get this, cause a write to the buffer can change it
+    num_bytes_to_read = min(circular_buffer_length - (long unsigned int)(*f_pos), count);   // consider current buffer length to calculate the actual number of bytes that will be read
+    PDEBUG("aesd_read: overall circular buffe length is %ld from which we'll read %ld bytes", circular_buffer_length, num_bytes_to_read);
+
+    if (num_bytes_to_read) {
+        while (read_count < num_bytes_to_read) {
+            PDEBUG("aesd_read: read loop, read so far %zu, real count %zu, *f_pos %lld", read_count, num_bytes_to_read, *f_pos);
+            
             buffentry = aesd_circular_buffer_find_entry_offset_for_fpos(dev->data, *f_pos, &entry_offset);
-            mutex_unlock(&dev->lock);
             if (buffentry) {
-#ifdef AESD_DEBUG
-                memset(tmp_entry, 0, sizeof(tmp_entry));
-                memcpy(tmp_entry, buffentry->buffptr, buffentry->size > 511 ? 511 : buffentry->size);
-                PDEBUG("Found a buffer entry for offset %lld, with size %zu and contents %s. Will copy %zu bytes to %p", *f_pos, buffentry->size, tmp_entry, (count - read_count) > buffentry->size ? buffentry->size : count - read_count, buf + read_count);
-#endif
+                PDEBUG("Found a buffer entry for offset %lld, with size %zu and contents %s.", *f_pos, buffentry->size, buffentry->buffptr + entry_offset);
+                PDEBUG("Will copy %zu bytes to %p", (num_bytes_to_read - read_count) > buffentry->size - entry_offset ? buffentry->size - entry_offset : num_bytes_to_read - read_count, buf + read_count);
+
                 /* we will always honor read requests, even if the buffer does not contain the full set of bytes requested */
-                memcpy(buf + read_count, buffentry->buffptr, (count - read_count) > buffentry->size ? buffentry->size : count - read_count);
-                read_count += buffentry->size;
-                *f_pos += buffentry->size;
+                transfer_size = (num_bytes_to_read - read_count) > buffentry->size - entry_offset ? buffentry->size - entry_offset : num_bytes_to_read - read_count;
+                if (copy_to_user(buf + read_count, buffentry->buffptr + entry_offset, transfer_size)) {
+                    mutex_unlock(&dev->lock);
+                    return -EFAULT;
+                }
+                read_count += transfer_size;
+                *f_pos += transfer_size;
             } else {
                 /* we got to the end of the circular buffer before retrieving count bytes, so parcial read... must return */
-                PDEBUG("Reached the end of the buffer before copying all requested bytes: %zu were requested, %zu were copied", count, read_count);
+                PDEBUG("Reached the end of the buffer before copying all requested bytes: %zu were requested, %zu were copied", num_bytes_to_read, read_count);
                 break;
             }
         }
     }
     PDEBUG("Returning %ld bytes read", read_count);
+    mutex_unlock(&dev->lock);
     return read_count;
 }
 
@@ -173,7 +200,10 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
                 PDEBUG("aesd_write: (re)allocated %ld bytes at %p", dev->current_temporary_buffer_size + idx + 1, dev->temporary_command_buffer);
 
                 /* 2. If everything went fine with the allocation, let's copy the incoming buffer into our kernel space buffer*/
-                memcpy(dev->temporary_command_buffer + dev->current_temporary_buffer_size, buf + off, idx + 1);
+                if (copy_from_user(dev->temporary_command_buffer + dev->current_temporary_buffer_size, buf + off, idx + 1)) {
+                    mutex_unlock(&dev->lock);
+                    return -EFAULT;
+                }
                 PDEBUG("Copied %ld bytes from position %ld of input buffer to position %ld of internal buffer", idx + 1, off, dev->current_temporary_buffer_size);
                 dev->current_temporary_buffer_size += idx + 1;
 
@@ -218,7 +248,10 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
             dev->temporary_command_buffer = buffer;
             PDEBUG("aesd_write: (re)allocated %ld bytes at %p", idx + dev->current_temporary_buffer_size, dev->temporary_command_buffer);
             /* 2. If everything went fine with the allocation, let's copy the incoming buffer into our kernel space buffer*/
-            memcpy(dev->temporary_command_buffer + dev->current_temporary_buffer_size, buf + off, idx);
+            if (copy_from_user(dev->temporary_command_buffer + dev->current_temporary_buffer_size, buf + off, idx)) {
+                mutex_unlock(&dev->lock);
+                return -EFAULT;
+            }
             PDEBUG("Copied %ld bytes from position %ld of input buffer to position %ld of internal buffer", idx, off, dev->current_temporary_buffer_size);
             dev->current_temporary_buffer_size += idx;
             mutex_unlock(&dev->lock);
@@ -232,8 +265,12 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     }
 
     print_circular_buffer_content(dev->data);
-    //*f_pos += count;
+    *f_pos += count;
     return count;
+}
+
+long int aesd_unlocked_ioctl(struct file* filp, unsigned int cmd, unsigned long seekto) {
+    return 0;
 }
 
 static int __init aesd_init_module(void)
