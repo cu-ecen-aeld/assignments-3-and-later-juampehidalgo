@@ -115,3 +115,22 @@ size_t aesd_circular_buffer_content_length(struct aesd_circular_buffer* buffer) 
     }
     return buffer_content_length;
 }
+
+ssize_t aesd_circular_buffer_find_fpos_at_position(struct aesd_circular_buffer* buffer, uint8_t position, size_t cmd_offs) {
+
+    uint8_t tmp = buffer->out_offs;
+    uint8_t counter = 0;
+    ssize_t result = -1;
+    for (tmp = buffer->out_offs, counter = 0; tmp < buffer->in_offs; tmp = (tmp + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED, counter++) {
+        if (counter == position) {
+            if (cmd_offs <= buffer->entry[tmp].size) {
+                return result + cmd_offs;
+            } else {
+                return -1;
+            }
+        }
+        result += buffer->entry[tmp].size;
+
+    }
+    return -1;
+}

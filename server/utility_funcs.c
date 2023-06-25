@@ -1,4 +1,6 @@
 #include "utility.h"
+#include "../aesd-char-driver/aesd_ioctl.h"
+#include <sys/ioctl.h>
 #include <errno.h>
 #include <unistd.h>
 #include <syslog.h>
@@ -20,6 +22,9 @@ void* thread_run_function(void* args) {
     char* buffer;
     size_t buffer_size;
     int filed = 0;
+    char* first_token = NULL;
+    char* second_token = NULL;
+    struct aesd_seekto seek_cmd = { 0 };
 
     while (true) {
         buffer = NULL;
@@ -35,6 +40,7 @@ void* thread_run_function(void* args) {
             thread_info->thread_return_value = EXIT_FAILURE;
             break;
         }
+
         /* so now that we got all the string into the buffer, dump it to the file, after getting hold of the mutex */
         ret_val = pthread_mutex_lock(thread_info->mutex_ptr);
         if (ret_val) {
@@ -46,39 +52,68 @@ void* thread_run_function(void* args) {
             thread_info->thread_return_value = EXIT_FAILURE;
             break;
         }
-        
         filed = open(thread_info->file_name, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
         if (filed < 0) {
             syslog(LOG_ERR, "Could not open/create output file at %s, error: %s", thread_info->file_name, strerror(errno));
-            thread_info->thread_return_value = EXIT_FAILURE;
-            pthread_mutex_unlock(thread_info->mutex_ptr);
-            break;
-        }
-
-        ret_val = dump_buffer_to_file(buffer, buffer_size, filed);
-        if (ret_val) {
             if (buffer != NULL) {
                 free(buffer);
-                buffer = NULL;
             }
             thread_info->thread_return_value = EXIT_FAILURE;
             pthread_mutex_unlock(thread_info->mutex_ptr);
             break;
         }
-        /* let's flush and make sure contents of file are there before releasing lock */
+
+        /* Now let's check received buffer of seek command */
+        if (strstr(buffer, "AESDCHAR_IOCSEEKTO:") != NULL) {
+            /* 1. Let's null terminate the temporary_command_buffer */
+            buffer[buffer_size] = '\0';
+            /* Let's get a pointer to values section of the string */
+            first_token = buffer + strlen("AESDCHAR_IOCSEEKTO:");   // we want our string to parse to be only comma separated values
+            /* Let's get the values split by the comma */
+            seek_cmd.write_cmd = (int)strtol(first_token, &second_token, 10);
+            /* check for successful conversion */
+            if (*second_token == ',') {
+                /* Jump over comma */
+                second_token++;
+                seek_cmd.write_cmd_offset = (int)strtol(second_token, &first_token, 10);
+                /* check for successful conversion again */
+                if (*first_token == '\0') {
+                    if (ioctl(filed, AESDCHAR_IOCSEEKTO, &seek_cmd)) {
+	                    syslog(LOG_ERR, "Error with ioctl...\n");
+                        if (buffer != NULL) {
+                            free(buffer);
+                        }
+                        thread_info->thread_return_value = EXIT_FAILURE;
+                        pthread_mutex_unlock(thread_info->mutex_ptr);
+                        break;
+	                }
+                }
+            }
+        } else {
+            ret_val = dump_buffer_to_file(buffer, buffer_size, filed);
+            if (ret_val) {
+                if (buffer != NULL) {
+                    free(buffer);
+                    buffer = NULL;
+                }
+                thread_info->thread_return_value = EXIT_FAILURE;
+                pthread_mutex_unlock(thread_info->mutex_ptr);
+                break;
+            }
+            /* let's flush and make sure contents of file are there before releasing lock */
 #ifndef USE_AESD_CHAR_DEVICE
-        if (fsync(filed) < 0) {
-            syslog(LOG_ERR, "Failed to sync output file from thread ID %ld, error: %s", pthread_self(), strerror(errno));
-            if (buffer != NULL) {
-                free(buffer);
-                buffer = NULL;
+            if (fsync(filed) < 0) {
+                syslog(LOG_ERR, "Failed to sync output file from thread ID %ld, error: %s", pthread_self(), strerror(errno));
+                if (buffer != NULL) {
+                    free(buffer);
+                    buffer = NULL;
+                }
+                thread_info->thread_return_value = EXIT_FAILURE;
+                pthread_mutex_unlock(thread_info->mutex_ptr);
+                break;
             }
-            thread_info->thread_return_value = EXIT_FAILURE;
-            pthread_mutex_unlock(thread_info->mutex_ptr);
-            break;
-        }
 #endif
-
+        }
         /* now dump complete file contents to remote party */
         ret_val = dump_file_to_socket(filed, thread_info->socketd);
         if (ret_val) {

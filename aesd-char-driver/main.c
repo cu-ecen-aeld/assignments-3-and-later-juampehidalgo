@@ -24,8 +24,6 @@
 
 #include "aesdchar.h"
 
-#define TMP_BUFFER_SIZE 512
-
 static int aesd_char_major = AESD_CHAR_MAJOR;
 static int aesd_char_minor = 0;
 static int aesd_char_num_devs = AESD_CHAR_NUM_DEVS;
@@ -105,8 +103,9 @@ loff_t aesd_llseek(struct file *filp, loff_t off, int whence) {
 
     size_t circular_buffer_length = 0;
     loff_t offset = 0;
+    const char* whence_str[] = {"SEEK_SET", "SEEK_CUR", "SEEK_END"};
 
-    PDEBUG("llseek with offset %lld and whence %d, current file offset is %lld", off, whence, current_offset);
+    PDEBUG("llseek with offset %lld and whence %s, current file offset is %lld", off, whence_str[whence], current_offset);
 
     mutex_lock(&dev->lock);
     circular_buffer_length = aesd_circular_buffer_content_length(dev->data);
@@ -171,7 +170,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
     // ssize_t retval = 0;
-    char *buffer = NULL;
+    char* buffer = NULL;
     struct aesd_buffer_entry buffentry = { 0 };
     struct aesd_dev* dev = filp->private_data;
     size_t idx = 0;
@@ -214,6 +213,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
                 buffentry.size = dev->current_temporary_buffer_size;
                 /* need to use filp to retrieve a pointer to the circular buffer */
                 aesd_circular_buffer_add_entry(dev->data, &buffentry);
+
                 dev->temporary_command_buffer = NULL;
                 dev->current_temporary_buffer_size = 0;
                 /* now advance idx and off to keep looking for command terminators in the input buffer*/
@@ -270,7 +270,25 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
 }
 
 long int aesd_unlocked_ioctl(struct file* filp, unsigned int cmd, unsigned long seekto) {
-    return 0;
+    struct aesd_dev* dev = filp->private_data;
+    struct aesd_seekto seek_data;
+    ssize_t offset = 0;
+
+    switch (cmd) {
+        case 1:
+            if (copy_from_user(&seek_data, (struct aesd_seekto*)seekto, sizeof(seek_data))) {
+                return -EFAULT;
+            }
+            offset = aesd_circular_buffer_find_fpos_at_position(dev->data, seek_data.write_cmd, seek_data.write_cmd_offset);
+            if (offset < 0) {
+                return -EINVAL;
+            }
+            filp->f_pos = offset;
+        default:
+            break;
+    }
+
+    return -EINVAL;
 }
 
 static int __init aesd_init_module(void)
