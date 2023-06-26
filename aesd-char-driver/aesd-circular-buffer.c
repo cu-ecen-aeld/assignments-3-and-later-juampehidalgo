@@ -14,6 +14,7 @@
 #include <linux/errno.h>
 #else
 #include <string.h>
+#include <stdlib.h>
 #include <errno.h>
 #endif
 
