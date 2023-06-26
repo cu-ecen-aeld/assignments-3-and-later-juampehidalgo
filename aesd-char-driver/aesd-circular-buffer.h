@@ -60,7 +60,7 @@ extern void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer);
 
 extern size_t aesd_circular_buffer_content_length(struct aesd_circular_buffer* buffer);
 
-extern ssize_t aesd_circular_buffer_find_fpos_at_position(struct aesd_circular_buffer* buffer, uint8_t position, size_t cmd_offs);
+extern size_t aesd_circular_buffer_find_fpos_at_position(struct aesd_circular_buffer* buffer, uint8_t position, size_t cmd_offs);
 
 /**
  * Create a for loop to iterate over each member of the circular buffer.

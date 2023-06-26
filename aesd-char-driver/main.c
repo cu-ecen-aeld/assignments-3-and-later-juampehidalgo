@@ -23,6 +23,7 @@
 #include <linux/fcntl.h>  // O_ACCMODE
 
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
 
 static int aesd_char_major = AESD_CHAR_MAJOR;
 static int aesd_char_minor = 0;
@@ -98,23 +99,59 @@ int aesd_release(struct inode *inode, struct file *filp)
 }
 
 loff_t aesd_llseek(struct file *filp, loff_t off, int whence) {
+    
     struct aesd_dev* dev = filp->private_data;
-    loff_t current_offset = filp->f_pos;
-
     size_t circular_buffer_length = 0;
-    loff_t offset = 0;
-    const char* whence_str[] = {"SEEK_SET", "SEEK_CUR", "SEEK_END"};
-
-    PDEBUG("llseek with offset %lld and whence %s, current file offset is %lld", off, whence_str[whence], current_offset);
-
-    mutex_lock(&dev->lock);
+    const char* whence_str = NULL;
+    loff_t new_off = 0;
+    
+    if (mutex_lock_interruptible(&dev->lock)) {
+        return -ERESTARTSYS;
+    }
     circular_buffer_length = aesd_circular_buffer_content_length(dev->data);
 
-    offset = fixed_size_llseek(filp, off, whence, circular_buffer_length);
-    PDEBUG("aesd_llseek: buffer size is %ld and offset returned by fixed_size_llseek is %lld", circular_buffer_length, offset);
+    switch (whence) {
+        case SEEK_SET:
+            /* if (off >= 0 && off < circular_buffer_length) {
+                filp->f_pos = off;
+            } else {
+                return -EINVAL;
+            } */
+            whence_str = "SEEK_SET";
+            break;
+        case SEEK_END:
+            /* if ((circular_buffer_length + off >= 0) && (circular_buffer_length + off < circular_buffer_length)) {
+                filp->f_pos = circular_buffer_length + off;
+            } else {
+                return -EINVAL;
+            } */
+            whence_str = "SEEK_END";
+            break;
+        case SEEK_CUR:
+            /* if ((filp->f_pos + off >= 0) && (filp->f_pos + off < circular_buffer_length)) {
+                filp->f_pos += off;
+            } else {
+                return -EINVAL;
+            } */
+            whence_str = "SEEK_CUR";
+            break;
+        default:
+            whence_str = "UNSUPPORTED";
+            return -EINVAL;
+    }
+
+    if (circular_buffer_length) {
+        new_off = fixed_size_llseek(filp, off, whence, circular_buffer_length);
+    } else {
+        new_off = -EINVAL;
+    }
+    PDEBUG("llseek with offset %lld and whence %s, current file offset is %lld", off, whence_str, filp->f_pos);
+
+    //offset = fixed_size_llseek(filp, off, whence, circular_buffer_length);
+    //PDEBUG("aesd_llseek: buffer size is %ld and offset returned by fixed_size_llseek is %lld and new filp->f_pos is %lld", circular_buffer_length, offset, filp->f_pos);
 
     mutex_unlock(&dev->lock);
-    return offset;
+    return new_off;
 
 }
 
@@ -132,11 +169,14 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
     print_circular_buffer_content(dev->data);
 
-    mutex_lock(&dev->lock);
+    if (mutex_lock_interruptible(&dev->lock)) {
+        return -ERESTARTSYS;
+    }
+
     /* get current size of all entries in the circular buffer */
     circular_buffer_length = aesd_circular_buffer_content_length(dev->data);    // need to lock before I get this, cause a write to the buffer can change it
     num_bytes_to_read = min(circular_buffer_length - (long unsigned int)(*f_pos), count);   // consider current buffer length to calculate the actual number of bytes that will be read
-    PDEBUG("aesd_read: overall circular buffe length is %ld from which we'll read %ld bytes", circular_buffer_length, num_bytes_to_read);
+    PDEBUG("aesd_read: overall circular buffer length is %ld from which we'll read %ld bytes", circular_buffer_length, num_bytes_to_read);
 
     if (num_bytes_to_read) {
         while (read_count < num_bytes_to_read) {
@@ -175,6 +215,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     struct aesd_dev* dev = filp->private_data;
     size_t idx = 0;
     size_t off = 0;
+    size_t wrote_bytes = 0;
 
     PDEBUG("write %zu bytes with file offset %lld, but will ignore the offset", count, *f_pos);
     /**
@@ -190,7 +231,9 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
             /* At least one command terminator was found at position idx, so let's copy over that specific chunk into temporary buffer, add it to the circular buffer */
             /* and then resize the buffer to hold the remaining of the input (and then loop again just in case multiple command in same write)*/
             /* 1. Now let's use krealloc to allocate/reallocate that buffer to be able to also hold the current chunk of bytes being written */
-            mutex_lock(&dev->lock);
+            if (mutex_lock_interruptible(&dev->lock)) {
+                return -ERESTARTSYS;
+            }
             PDEBUG("Prior to reallocation, temporary_command_buffer was at %p with length %ld", dev->temporary_command_buffer, dev->current_temporary_buffer_size);
             buffer = krealloc(dev->temporary_command_buffer, dev->current_temporary_buffer_size + idx + 1, GFP_KERNEL);
             if (buffer)
@@ -213,6 +256,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
                 buffentry.size = dev->current_temporary_buffer_size;
                 /* need to use filp to retrieve a pointer to the circular buffer */
                 aesd_circular_buffer_add_entry(dev->data, &buffentry);
+                wrote_bytes += buffentry.size;
+                //*f_pos += buffentry.size;
 
                 dev->temporary_command_buffer = NULL;
                 dev->current_temporary_buffer_size = 0;
@@ -239,7 +284,9 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     {
         /* Got to the end of the buf and found not terminator, reallocate temporary buffer, copy over contents and exit */
         PDEBUG("aesd_write: no command terminator found in this input chunk");
-        mutex_lock(&dev->lock);
+        if (mutex_lock_interruptible(&dev->lock)) {
+            return -ERESTARTSYS;
+        }
         PDEBUG("aesd_write: prior to allocation, temporary_command_buffer was at %p with length %ld", dev->temporary_command_buffer, dev->current_temporary_buffer_size);
         /* 1. Now let's use krealloc to allocate/reallocate that buffer to be able to also hold the current chunk of bytes being written */
         buffer = krealloc(dev->temporary_command_buffer, idx + dev->current_temporary_buffer_size, GFP_KERNEL);
@@ -265,8 +312,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     }
 
     print_circular_buffer_content(dev->data);
-    *f_pos += count;
-    return count;
+    return wrote_bytes;
 }
 
 long int aesd_unlocked_ioctl(struct file* filp, unsigned int cmd, unsigned long seekto) {
@@ -274,16 +320,35 @@ long int aesd_unlocked_ioctl(struct file* filp, unsigned int cmd, unsigned long 
     struct aesd_seekto seek_data;
     ssize_t offset = 0;
 
+    PDEBUG("On ioctl routine...");
+    if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC) {
+        return -ENOTTY;
+    }
+    if (_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) {
+        return -ENOTTY;
+    }
+
     switch (cmd) {
-        case 1:
+        case AESDCHAR_IOCSEEKTO:
+            if (mutex_lock_interruptible(&dev->lock)) {
+                return -ERESTARTSYS;
+            }
             if (copy_from_user(&seek_data, (struct aesd_seekto*)seekto, sizeof(seek_data))) {
+                printk(KERN_WARNING "aesd_unlocked_ioctl: failed to copy from user data");
+                mutex_unlock(&dev->lock);
                 return -EFAULT;
             }
+            
             offset = aesd_circular_buffer_find_fpos_at_position(dev->data, seek_data.write_cmd, seek_data.write_cmd_offset);
+            PDEBUG("Found the following offset for command index %d, command offset %d: %ld", seek_data.write_cmd, seek_data.write_cmd_offset, offset);
             if (offset < 0) {
+                printk(KERN_WARNING "aesd_unlocked_ioctl: offset not found in circular buffer");
+                mutex_unlock(&dev->lock);
                 return -EINVAL;
             }
             filp->f_pos = offset;
+            mutex_unlock(&dev->lock);
+            return 0;
         default:
             break;
     }

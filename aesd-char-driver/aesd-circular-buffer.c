@@ -11,9 +11,10 @@
 #ifdef __KERNEL__
 #include <linux/string.h>
 #include <linux/slab.h>
-#include <linux/kernel.h>
+#include <linux/errno.h>
 #else
 #include <string.h>
+#include <errno.h>
 #endif
 
 #include "aesd-circular-buffer.h"
@@ -35,26 +36,22 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
     * TODO: implement per description
     */
     uint8_t entry_idx = buffer->out_offs;
-    uint8_t previous_idx = entry_idx;
     size_t accummulated_off = 0;
 
-    while(accummulated_off <= char_offset) {
+    if (buffer == NULL) {
+        return NULL;
+    }
+
+    do {
         accummulated_off += buffer->entry[entry_idx].size;
-        previous_idx = entry_idx;
+        if (char_offset < accummulated_off) {
+            *entry_offset_byte_rtn = char_offset - (accummulated_off - buffer->entry[entry_idx].size);
+            return &buffer->entry[entry_idx];
+        }
         entry_idx = (entry_idx + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
 
-        if (accummulated_off > char_offset) {
-            /* the character we want is pointed to by previous_idx */
-            accummulated_off -= buffer->entry[previous_idx].size;
-            *entry_offset_byte_rtn = char_offset - accummulated_off;
-            return &(buffer->entry[previous_idx]);
-        }
+    } while (entry_idx != buffer->in_offs);
 
-        if (entry_idx == buffer->in_offs) {
-            /* got to the end of the buffer */
-            break;
-        }
-    }
     return NULL;
 }
 
@@ -71,15 +68,26 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
     * TODO: implement per description
     */
     struct aesd_buffer_entry* tmp_entry = NULL;
-    
-    printk(KERN_DEBUG "Adding new entry to the circular buffer: %p with %ld bytes", add_entry->buffptr, add_entry->size);
 
+    if (buffer == NULL || add_entry == NULL) {
+        return;
+    }
+
+#ifdef __KERNEL__
+    printk(KERN_DEBUG "Adding new entry to the circular buffer: %p with %ld bytes", add_entry->buffptr, add_entry->size);
+#endif
     if (buffer->full) {
+#ifdef __KERNEL__
         printk(KERN_DEBUG "Overwriting position in circular buffer");
+#endif
         // entries themselves are part of the overall structure, so we just need to free the buffer that contains the command itself
         tmp_entry = &(buffer->entry[buffer->out_offs]);
         if (tmp_entry->buffptr) {
+#ifdef __KERNEL__
             kfree(tmp_entry->buffptr);
+#else
+            free(tmp_entry->buffptr);
+#endif
         }
         buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
     }
@@ -105,32 +113,47 @@ void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer)
 }
 
 size_t aesd_circular_buffer_content_length(struct aesd_circular_buffer* buffer) {
-    struct aesd_buffer_entry* entry = NULL;
     uint8_t index = 0;
-
     size_t buffer_content_length = 0;
 
-    AESD_CIRCULAR_BUFFER_FOREACH(entry, buffer, index) {
-        buffer_content_length += entry->size;
+    if (buffer == NULL) {
+        return 0;
     }
+
+    index = buffer->out_offs;
+
+    do {
+        buffer_content_length += buffer->entry[index].size;
+        index = (index + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    } while (index != buffer->in_offs);
+
     return buffer_content_length;
 }
 
-ssize_t aesd_circular_buffer_find_fpos_at_position(struct aesd_circular_buffer* buffer, uint8_t position, size_t cmd_offs) {
+size_t aesd_circular_buffer_find_fpos_at_position(struct aesd_circular_buffer* buffer, uint8_t position, size_t cmd_offs) {
 
-    uint8_t tmp = buffer->out_offs;
+    size_t offset = 0;
     uint8_t counter = 0;
-    ssize_t result = -1;
-    for (tmp = buffer->out_offs, counter = 0; tmp < buffer->in_offs; tmp = (tmp + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED, counter++) {
-        if (counter == position) {
-            if (cmd_offs <= buffer->entry[tmp].size) {
-                return result + cmd_offs;
+    uint8_t index = 0;
+
+    if (buffer == NULL) {
+        return -EINVAL;
+    }
+
+    index = buffer->out_offs;
+
+    do {
+        if (position == counter) {
+            if (cmd_offs <= buffer->entry[index].size) {
+                return offset + cmd_offs;
             } else {
-                return -1;
+                return -EINVAL;
             }
         }
-        result += buffer->entry[tmp].size;
+        counter++;
+        offset += buffer->entry[index].size;
+        index = (index + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    } while (index != buffer->in_offs);
 
-    }
-    return -1;
+    return -EINVAL;
 }

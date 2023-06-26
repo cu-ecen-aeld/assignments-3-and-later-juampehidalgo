@@ -65,8 +65,10 @@ void* thread_run_function(void* args) {
 
         /* Now let's check received buffer of seek command */
         if (strstr(buffer, "AESDCHAR_IOCSEEKTO:") != NULL) {
+            syslog(LOG_DEBUG, "Received IOCTL command in server... %s", buffer);
             /* 1. Let's null terminate the temporary_command_buffer */
             buffer[buffer_size] = '\0';
+            syslog(LOG_DEBUG, "After terminating the string %s", buffer);
             /* Let's get a pointer to values section of the string */
             first_token = buffer + strlen("AESDCHAR_IOCSEEKTO:");   // we want our string to parse to be only comma separated values
             /* Let's get the values split by the comma */
@@ -76,17 +78,16 @@ void* thread_run_function(void* args) {
                 /* Jump over comma */
                 second_token++;
                 seek_cmd.write_cmd_offset = (int)strtol(second_token, &first_token, 10);
+                syslog(LOG_DEBUG, "Extracted ioctl seek command parameters extracted: %d, %d", seek_cmd.write_cmd, seek_cmd.write_cmd_offset);
                 /* check for successful conversion again */
-                if (*first_token == '\0') {
-                    if (ioctl(filed, AESDCHAR_IOCSEEKTO, &seek_cmd)) {
-	                    syslog(LOG_ERR, "Error with ioctl...\n");
-                        if (buffer != NULL) {
-                            free(buffer);
-                        }
-                        thread_info->thread_return_value = EXIT_FAILURE;
-                        pthread_mutex_unlock(thread_info->mutex_ptr);
-                        break;
-	                }
+                if (ioctl(filed, AESDCHAR_IOCSEEKTO, &seek_cmd)) {
+                    syslog(LOG_ERR, "Error with ioctl...\n");
+                    if (buffer != NULL) {
+                        free(buffer);
+                    }
+                    thread_info->thread_return_value = EXIT_FAILURE;
+                    pthread_mutex_unlock(thread_info->mutex_ptr);
+                    break;
                 }
             }
         } else {
